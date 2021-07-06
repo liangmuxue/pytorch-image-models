@@ -104,7 +104,8 @@ class MobileNetV3(nn.Module):
         stem_size = round_chs_fn(stem_size)
         self.conv_stem = create_conv2d(in_chans, stem_size, 3, stride=2, padding=pad_type)
         self.bn1 = norm_layer(stem_size)
-        self.act1 = act_layer(inplace=True)
+        # self.act1 = act_layer()
+        self.act1 = act_layer()
 
         # Middle stages (IR/ER/DS Blocks)
         builder = EfficientNetBuilder(
@@ -118,7 +119,7 @@ class MobileNetV3(nn.Module):
         self.global_pool = SelectAdaptivePool2d(pool_type=global_pool)
         num_pooled_chs = head_chs * self.global_pool.feat_mult()
         self.conv_head = create_conv2d(num_pooled_chs, self.num_features, 1, padding=pad_type, bias=head_bias)
-        self.act2 = act_layer(inplace=True)
+        self.act2 = act_layer()
         self.classifier = Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
         efficientnet_init_weights(self)
@@ -178,7 +179,7 @@ class MobileNetV3Features(nn.Module):
         stem_size = round_chs_fn(stem_size)
         self.conv_stem = create_conv2d(in_chans, stem_size, 3, stride=2, padding=pad_type)
         self.bn1 = norm_layer(stem_size)
-        self.act1 = act_layer(inplace=True)
+        self.act1 = act_layer()
 
         # Middle stages (IR/ER/DS Blocks)
         builder = EfficientNetBuilder(

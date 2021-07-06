@@ -655,6 +655,7 @@ def train_one_epoch(
 
         with amp_autocast():
             output = model(input)
+            print("output is:{}".format(output))
             loss = loss_fn(output, target)
 
         if not args.distributed:
