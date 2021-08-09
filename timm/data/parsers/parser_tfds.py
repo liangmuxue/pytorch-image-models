@@ -25,13 +25,8 @@ from .parser import Parser
 
 
 MAX_TP_SIZE = 8  # maximum TF threadpool size, only doing jpeg decodes and queuing activities
-SHUFFLE_SIZE = 20480  # samples to shuffle in DS queue
-PREFETCH_SIZE = 2048  # samples to prefetch
-
-
-def even_split_indices(split, n, num_samples):
-    partitions = [round(i * num_samples / n) for i in range(n + 1)]
-    return [f"{split}[{partitions[i]}:{partitions[i+1]}]" for i in range(n)]
+SHUFFLE_SIZE = 16834  # samples to shuffle in DS queue
+PREFETCH_SIZE = 4096  # samples to prefetch
 
 
 class ParserTfds(Parser):
@@ -57,7 +52,7 @@ class ParserTfds(Parser):
         components.
 
     """
-    def __init__(self, root, name, split='train', shuffle=False, is_training=False, batch_size=None, repeats=0):
+    def __init__(self, root, name, split='train', shuffle=False, is_training=False, batch_size=None):
         super().__init__()
         self.root = root
         self.split = split
@@ -67,8 +62,6 @@ class ParserTfds(Parser):
             assert batch_size is not None,\
                 "Must specify batch_size in training mode for reasonable behaviour w/ TFDS wrapper"
         self.batch_size = batch_size
-        self.repeats = repeats
-        self.subsplit = None
 
         self.builder = tfds.builder(name, data_dir=root)
         # NOTE: please use tfds command line app to download & prepare datasets, I don't want to call
@@ -102,7 +95,6 @@ class ParserTfds(Parser):
         if worker_info is not None:
             self.worker_info = worker_info
             num_workers = worker_info.num_workers
-            global_num_workers = self.dist_num_replicas * num_workers
             worker_id = worker_info.id
 
             # FIXME I need to spend more time figuring out the best way to distribute/split data across
@@ -122,38 +114,24 @@ class ParserTfds(Parser):
             #     split = split + '[{}:]'.format(start)
             # else:
             #     split = split + '[{}:{}]'.format(start, start + split_size)
-            if not self.is_training and '[' not in self.split:
-                # If not training, and split doesn't define a subsplit, manually split the dataset
-                # for more even samples / worker
-                self.subsplit = even_split_indices(self.split, global_num_workers, self.num_samples)[
-                    self.dist_rank * num_workers + worker_id]
 
-        if self.subsplit is None:
-            input_context = tf.distribute.InputContext(
-                num_input_pipelines=self.dist_num_replicas * num_workers,
-                input_pipeline_id=self.dist_rank * num_workers + worker_id,
-                num_replicas_in_sync=self.dist_num_replicas  # FIXME does this arg have any impact?
-            )
-        else:
-            input_context = None
+        input_context = tf.distribute.InputContext(
+            num_input_pipelines=self.dist_num_replicas * num_workers,
+            input_pipeline_id=self.dist_rank * num_workers + worker_id,
+            num_replicas_in_sync=self.dist_num_replicas  # FIXME does this have any impact?
+        )
 
-        read_config = tfds.ReadConfig(
-            shuffle_seed=42,
-            shuffle_reshuffle_each_iteration=True,
-            input_context=input_context)
-        ds = self.builder.as_dataset(
-            split=self.subsplit or self.split, shuffle_files=self.shuffle, read_config=read_config)
+        read_config = tfds.ReadConfig(input_context=input_context)
+        ds = self.builder.as_dataset(split=split, shuffle_files=self.shuffle, read_config=read_config)
         # avoid overloading threading w/ combo fo TF ds threads + PyTorch workers
-        options = tf.data.Options()
-        options.experimental_threading.private_threadpool_size = max(1, MAX_TP_SIZE // num_workers)
-        options.experimental_threading.max_intra_op_parallelism = 1
-        ds = ds.with_options(options)
-        if self.is_training or self.repeats > 1:
+        ds.options().experimental_threading.private_threadpool_size = max(1, MAX_TP_SIZE // num_workers)
+        ds.options().experimental_threading.max_intra_op_parallelism = 1
+        if self.is_training:
             # to prevent excessive drop_last batch behaviour w/ IterableDatasets
             # see warnings at https://pytorch.org/docs/stable/data.html#multi-process-data-loading
             ds = ds.repeat()  # allow wrap around and break iteration manually
         if self.shuffle:
-            ds = ds.shuffle(min(self.num_samples, SHUFFLE_SIZE) // self._num_pipelines, seed=0)
+            ds = ds.shuffle(min(self.num_samples // self._num_pipelines, SHUFFLE_SIZE), seed=0)
         ds = ds.prefetch(min(self.num_samples // self._num_pipelines, PREFETCH_SIZE))
         self.ds = tfds.as_numpy(ds)
 
@@ -165,7 +143,7 @@ class ParserTfds(Parser):
         #     This adds extra samples and will slightly alter validation results.
         #   2. determine loop ending condition in training w/ repeat enabled so that only full batch_size
         #     batches are produced (underlying tfds iter wraps around)
-        target_sample_count = math.ceil(max(1, self.repeats) * self.num_samples / self._num_pipelines)
+        target_sample_count = math.ceil(self.num_samples / self._num_pipelines)
         if self.is_training:
             # round up to nearest batch_size per worker-replica
             target_sample_count = math.ceil(target_sample_count / self.batch_size) * self.batch_size
@@ -182,8 +160,8 @@ class ParserTfds(Parser):
         if not self.is_training and self.dist_num_replicas and 0 < sample_count < target_sample_count:
             # Validation batch padding only done for distributed training where results are reduced across nodes.
             # For single process case, it won't matter if workers return different batch sizes.
-            # FIXME if using input_context or % based subsplits, sample count can vary by more than +/- 1 and this
-            # approach is not optimal
+            # FIXME this needs more testing, possible for sharding / split api to cause differences of > 1?
+            assert target_sample_count - sample_count == 1  # should only be off by 1 or sharding is not optimal
             yield img, sample['label']  # yield prev sample again
             sample_count += 1
 
@@ -198,7 +176,7 @@ class ParserTfds(Parser):
     def __len__(self):
         # this is just an estimate and does not factor in extra samples added to pad batches based on
         # complete worker & replica info (not available until init in dataloader).
-        return math.ceil(max(1, self.repeats) * self.num_samples / self.dist_num_replicas)
+        return math.ceil(self.num_samples / self.dist_num_replicas)
 
     def _filename(self, index, basename=False, absolute=False):
         assert False, "Not supported" # no random access to samples

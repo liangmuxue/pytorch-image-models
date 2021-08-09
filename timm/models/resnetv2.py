@@ -274,9 +274,7 @@ class ResNetStage(nn.Module):
         return x
 
 
-def create_resnetv2_stem(
-        in_chs, out_chs=64, stem_type='', preact=True,
-        conv_layer=StdConv2d, norm_layer=partial(GroupNormAct, num_groups=32)):
+def create_stem(in_chs, out_chs, stem_type='', preact=True, conv_layer=None, norm_layer=None):
     stem = OrderedDict()
     assert stem_type in ('', 'fixed', 'same', 'deep', 'deep_fixed', 'deep_same')
 
@@ -324,10 +322,9 @@ class ResNetV2(nn.Module):
 
         self.feature_info = []
         stem_chs = make_div(stem_chs * wf)
-        self.stem = create_resnetv2_stem(
-            in_chans, stem_chs, stem_type, preact, conv_layer=conv_layer, norm_layer=norm_layer)
-        stem_feat = ('stem.conv3' if 'deep' in stem_type else 'stem.conv') if preact else 'stem.norm'
-        self.feature_info.append(dict(num_chs=stem_chs, reduction=2, module=stem_feat))
+        self.stem = create_stem(in_chans, stem_chs, stem_type, preact, conv_layer=conv_layer, norm_layer=norm_layer)
+        # NOTE no, reduction 2 feature if preact
+        self.feature_info.append(dict(num_chs=stem_chs, reduction=2, module='' if preact else 'stem.norm'))
 
         prev_chs = stem_chs
         curr_stride = 4
@@ -346,7 +343,10 @@ class ResNetV2(nn.Module):
                 act_layer=act_layer, conv_layer=conv_layer, norm_layer=norm_layer, block_dpr=bdpr, block_fn=block_fn)
             prev_chs = out_chs
             curr_stride *= stride
-            self.feature_info += [dict(num_chs=prev_chs, reduction=curr_stride, module=f'stages.{stage_idx}')]
+            feat_name = f'stages.{stage_idx}'
+            if preact:
+                feat_name = f'stages.{stage_idx + 1}.blocks.0.norm1' if (stage_idx + 1) != len(channels) else 'norm'
+            self.feature_info += [dict(num_chs=prev_chs, reduction=curr_stride, module=feat_name)]
             self.stages.add_module(str(stage_idx), stage)
 
         self.num_features = prev_chs
@@ -365,7 +365,6 @@ class ResNetV2(nn.Module):
         return self.head.fc
 
     def reset_classifier(self, num_classes, global_pool='avg'):
-        self.num_classes = num_classes
         self.head = ClassifierHead(
             self.num_features, num_classes, pool_type=global_pool, drop_rate=self.drop_rate, use_conv=True)
 
@@ -394,9 +393,8 @@ class ResNetV2(nn.Module):
                 self.stem.conv.weight.copy_(stem_conv_w)
             self.norm.weight.copy_(tf2th(weights[f'{prefix}group_norm/gamma']))
             self.norm.bias.copy_(tf2th(weights[f'{prefix}group_norm/beta']))
-            if self.head.fc.weight.shape[0] == weights[f'{prefix}head/conv2d/kernel'].shape[-1]:
-                self.head.fc.weight.copy_(tf2th(weights[f'{prefix}head/conv2d/kernel']))
-                self.head.fc.bias.copy_(tf2th(weights[f'{prefix}head/conv2d/bias']))
+            self.head.fc.weight.copy_(tf2th(weights[f'{prefix}head/conv2d/kernel']))
+            self.head.fc.bias.copy_(tf2th(weights[f'{prefix}head/conv2d/bias']))
             for i, (sname, stage) in enumerate(self.stages.named_children()):
                 for j, (bname, block) in enumerate(stage.blocks.named_children()):
                     convname = 'standardized_conv2d'
@@ -416,13 +414,16 @@ class ResNetV2(nn.Module):
 
 
 def _create_resnetv2(variant, pretrained=False, **kwargs):
+    # FIXME feature map extraction is not setup properly for pre-activation mode right now
+    preact = kwargs.get('preact', True)
     feature_cfg = dict(flatten_sequential=True)
+    if preact:
+        feature_cfg['feature_cls'] = 'hook'
+        feature_cfg['out_indices'] = (1, 2, 3, 4)  # no stride 2, 0 level feat for preact
+
     return build_model_with_cfg(
-        ResNetV2, variant, pretrained,
-        default_cfg=default_cfgs[variant],
-        feature_cfg=feature_cfg,
-        pretrained_custom_load=True,
-        **kwargs)
+        ResNetV2, variant, pretrained, default_cfg=default_cfgs[variant], pretrained_custom_load=True,
+        feature_cfg=feature_cfg, **kwargs)
 
 
 @register_model

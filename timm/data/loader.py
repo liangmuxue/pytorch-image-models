@@ -4,6 +4,12 @@ Prefetcher and Fast Collate inspired by NVIDIA APEX example at
 https://github.com/NVIDIA/apex/commit/d5e2bb4bdeedd27b1dfaf5bb2b24d6c000dee9be#diff-cf86c282ff7fba81fad27a559379d5bf
 
 Hacked together by / Copyright 2020 Ross Wightman
+
+Modified by YANG Ruixin for multi-label classification
+2021/03/18
+https://github.com/yang-ruixin
+yang_ruixin@126.com (in China)
+rxn.yang@gmail.com (out of China)
 """
 
 import torch.utils.data
@@ -82,7 +88,11 @@ class PrefetchLoader:
         for next_input, next_target in self.loader:
             with torch.cuda.stream(stream):
                 next_input = next_input.cuda(non_blocking=True)
-                next_target = next_target.cuda(non_blocking=True)
+                # ================================
+                # for multi labels, 'dict' object has no attribute 'cuda'
+                # next_target = next_target.cuda(non_blocking=True)
+                # ================================
+
                 if self.fp16:
                     next_input = next_input.half().sub_(self.mean).div_(self.std)
                 else:
@@ -160,29 +170,28 @@ def create_loader(
     if re_split:
         # apply RE to second half of batch if no aug split otherwise line up with aug split
         re_num_splits = num_aug_splits or 2
-    if dataset.transform is None:
-        dataset.transform = create_transform(
-            input_size,
-            is_training=is_training,
-            use_prefetcher=use_prefetcher,
-            no_aug=no_aug,
-            scale=scale,
-            ratio=ratio,
-            hflip=hflip,
-            vflip=vflip,
-            color_jitter=color_jitter,
-            auto_augment=auto_augment,
-            interpolation=interpolation,
-            mean=mean,
-            std=std,
-            crop_pct=crop_pct,
-            tf_preprocessing=tf_preprocessing,
-            re_prob=re_prob,
-            re_mode=re_mode,
-            re_count=re_count,
-            re_num_splits=re_num_splits,
-            separate=num_aug_splits > 0,
-        )
+    dataset.transform = create_transform(
+        input_size,
+        is_training=is_training,
+        use_prefetcher=use_prefetcher,
+        no_aug=no_aug,
+        scale=scale,
+        ratio=ratio,
+        hflip=hflip,
+        vflip=vflip,
+        color_jitter=color_jitter,
+        auto_augment=auto_augment,
+        interpolation=interpolation,
+        mean=mean,
+        std=std,
+        crop_pct=crop_pct,
+        tf_preprocessing=tf_preprocessing,
+        re_prob=re_prob,
+        re_mode=re_mode,
+        re_count=re_count,
+        re_num_splits=re_num_splits,
+        separate=num_aug_splits > 0,
+    )
 
     sampler = None
     if distributed and not isinstance(dataset, torch.utils.data.IterableDataset):
@@ -193,8 +202,15 @@ def create_loader(
             # of samples per-process, will slightly alter validation results
             sampler = OrderedDistributedSampler(dataset)
 
-    if collate_fn is None:
-        collate_fn = fast_collate if use_prefetcher else torch.utils.data.dataloader.default_collate
+    # ================================
+    # target or label is dict, see labels in def __getitem__(self, idx) in class DatasetML(data.Dataset) in dataset.py
+    # dict is not torch.dtype, so fast_collate does not work for multi-label classification
+
+    # if collate_fn is None:
+    #     collate_fn = fast_collate if use_prefetcher else torch.utils.data.dataloader.default_collate
+
+    collate_fn = torch.utils.data.dataloader.default_collate
+    # ================================
 
     loader_class = torch.utils.data.DataLoader
 

@@ -10,3 +10,5 @@ from .parsers import create_parser
 from .real_labels import RealLabelsImagenet
 from .transforms import *
 from .transforms_factory import create_transform
+
+from .dataset import DatasetAttributes, DatasetML  # ================================

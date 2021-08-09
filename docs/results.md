@@ -1,10 +1,9 @@
 # Results
 
-CSV files containing an ImageNet-1K and out-of-distribution (OOD) test set validation results for all models with pretrained weights is located in the repository [results folder](https://github.com/rwightman/pytorch-image-models/tree/master/results).
+CSV files containing an ImageNet-1K validation and out-of-distribution (OOD) test set validation results for all included models with pretrained weights and default configurations is located [here](https://github.com/rwightman/pytorch-image-models/tree/master/results).
 
 ## Self-trained Weights
-
-The table below includes ImageNet-1k validation results of model weights that I've trained myself. It is not updated as frequently as the csv results outputs linked above.
+I've leveraged the training scripts in this repository to train a few of the models with to good levels of performance.
 
 |Model | Acc@1 (Err) | Acc@5 (Err) | Param # (M) | Interpolation | Image Size |
 |---|---|---|---|---|---|

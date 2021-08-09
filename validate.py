@@ -6,7 +6,19 @@ models or training checkpoints against ImageNet or similarly organized image dat
 canonical PyTorch, standard Python style, and good performance. Repurpose as you see fit.
 
 Hacked together by Ross Wightman (https://github.com/rwightman)
+
+Modified by YANG Ruixin for multi-label classification
+2021/03/18
+https://github.com/yang-ruixin
+yang_ruixin@126.com (in China)
+rxn.yang@gmail.com (out of China)
 """
+
+# ================================
+from timm.data import DatasetAttributes, DatasetML
+from timm.models import MultiLabelModel
+# ================================
+
 import argparse
 import os
 import csv
@@ -42,17 +54,17 @@ _logger = logging.getLogger('validate')
 
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Validation')
-parser.add_argument('data', metavar='DIR',
+parser.add_argument('--data_dir',default='/home/bavon/Downloads/CelebAMask-HQ',
                     help='path to dataset')
 parser.add_argument('--dataset', '-d', metavar='NAME', default='',
                     help='dataset type (default: ImageFolder/ImageTar if empty)')
 parser.add_argument('--split', metavar='NAME', default='validation',
                     help='dataset split (default: validation)')
-parser.add_argument('--model', '-m', metavar='NAME', default='dpn92',
+parser.add_argument('--model', '-m', metavar='NAME', default='efficientnet_b2',
                     help='model architecture (default: dpn92)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 2)')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
+parser.add_argument('-b', '--batch-size', default=16, type=int,
                     metavar='N', help='mini-batch size (default: 256)')
 parser.add_argument('--img-size', default=None, type=int,
                     metavar='N', help='Input image dimension, uses model default if empty')
@@ -74,7 +86,7 @@ parser.add_argument('--gp', default=None, type=str, metavar='POOL',
                     help='Global pool type, one of (fast, avg, max, avgmax, avgmaxc). Model default if None.')
 parser.add_argument('--log-freq', default=10, type=int,
                     metavar='N', help='batch logging frequency (default: 10)')
-parser.add_argument('--checkpoint', default='', type=str, metavar='PATH',
+parser.add_argument('--checkpoint', default='/home/bavon/app/PyTorch-Image-Models-Multi-Label-Classification-main//output/train/20210805-153730-efficientnet_b2-260/checkpoint-58.pth.tar', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
@@ -111,6 +123,11 @@ parser.add_argument('--valid-labels', default='', type=str, metavar='FILENAME',
 
 
 def validate(args):
+    # ================================================================
+    attributes_path = args.data_dir + '/gentest-20.csv'
+    test_path = args.data_dir + '/gentest-20.csv'  # val.csv or test.csv
+    # ================================================================
+
     # might as well try to validate something
     args.pretrained = args.pretrained or not args.checkpoint
     args.prefetcher = not args.no_prefetcher
@@ -146,22 +163,35 @@ def validate(args):
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes
 
+    data_config = resolve_data_config(vars(args), model=model, use_test_size=True)
+    test_time_pool = False
+    if not args.no_test_pool:
+        model, test_time_pool = apply_test_time_pool(model, data_config, use_test_size=True)
+
+    model = model.cuda()
+
+    # ================================
+    attributes = DatasetAttributes(attributes_path)
+
+    model = MultiLabelModel(model,
+                            n_gender_classes=attributes.num_gender,
+                            n_AgeLess18_classes=attributes.num_AgeLess18,
+                            # n_AgeOver60_classes=attributes.num_AgeOver60,
+                            # n_Age18_60_classes=attributes.num_Age18_60,
+                            n_hat_classes=attributes.num_hat,
+                            n_glass_classes=attributes.num_glass).cuda()
+    # ================================
+
     if args.checkpoint:
         load_checkpoint(model, args.checkpoint, args.use_ema)
 
     param_count = sum([m.numel() for m in model.parameters()])
     _logger.info('Model %s created, param count: %d' % (args.model, param_count))
 
-    data_config = resolve_data_config(vars(args), model=model, use_test_size=True, verbose=True)
-    test_time_pool = False
-    if not args.no_test_pool:
-        model, test_time_pool = apply_test_time_pool(model, data_config, use_test_size=True)
-
     if args.torchscript:
         torch.jit.optimized_execution(True)
         model = torch.jit.script(model)
 
-    model = model.cuda()
     if args.apex_amp:
         model = amp.initialize(model, opt_level='O1')
 
@@ -171,11 +201,18 @@ def validate(args):
     if args.num_gpu > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu)))
 
-    criterion = nn.CrossEntropyLoss().cuda()
+    # ================================
+    # criterion = nn.CrossEntropyLoss().cuda()
+    loss_fn = nn.CrossEntropyLoss().cuda()
 
-    dataset = create_dataset(
-        root=args.data, name=args.dataset, split=args.split,
-        load_bytes=args.tf_preprocessing, class_map=args.class_map)
+    # dataset = create_dataset(
+    #     root=args.data, name=args.dataset, split=args.split,
+    #     load_bytes=args.tf_preprocessing, class_map=args.class_map)
+
+    dataset = DatasetML(test_path, attributes)
+    num_of_data = len(dataset)
+    print('number of data:', num_of_data)
+    # ================================
 
     if args.valid_labels:
         with open(args.valid_labels, 'r') as f:
@@ -211,11 +248,22 @@ def validate(args):
     model.eval()
     with torch.no_grad():
         # warmup, reduce variability of first batch time, especially for comparing torchscript vs non
-        input = torch.randn((args.batch_size,) + tuple(data_config['input_size'])).cuda()
+        input = torch.randn((args.batch_size,) + data_config['input_size']).cuda()
         if args.channels_last:
             input = input.contiguous(memory_format=torch.channels_last)
         model(input)
         end = time.time()
+
+        #acc1_color = acc1_gender = acc1_article = 0  # ================================
+        total_loss = 0
+        acc1_gender = 0
+        acc1_hat = 0
+        acc1_glass = 0
+        # acc1_mask = 0
+        acc1_AgeOver60 =0
+        acc1_Age18_60=0
+        # acc1_Age31_45=0
+        acc1_AgeLess18=0
         for batch_idx, (input, target) in enumerate(loader):
             if args.no_prefetcher:
                 target = target.cuda()
@@ -229,13 +277,32 @@ def validate(args):
 
             if valid_labels is not None:
                 output = output[:, valid_labels]
-            loss = criterion(output, target)
+
+            # ================================
+            # loss = criterion(output, target)
+            loss = model.get_loss(loss_fn, output, target)
+            # ================================
 
             if real_labels is not None:
                 real_labels.add_result(output)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output.detach(), target, topk=(1, 5))
+            # ================================
+            # acc1, acc5 = accuracy(output.detach(), target, topk=(1, 5))
+            acc1, acc5, acc1_for_each_label = model.get_accuracy(accuracy, output, target, topk=(1, 2))  # topk=(1, 2) ================================
+
+            percentage = len(input) / num_of_data
+            # acc1_color += acc1_for_each_label['color'] * percentage
+            # acc1_gender += acc1_for_each_label['gender'] * percentage
+            # acc1_article += acc1_for_each_label['article'] * percentage
+            acc1_hat += acc1_for_each_label['hat'] * percentage
+            acc1_gender += acc1_for_each_label['gender'] * percentage
+            # acc1_mask += acc1_for_each_label['mask'] * percentage
+            acc1_glass += acc1_for_each_label['glass'] * percentage
+            # acc1_Age46_60 += acc1_for_each_label['Age46_60'] * percentage
+            acc1_AgeLess18 += acc1_for_each_label['AgeLess18'] * percentage
+            # ================================
+
             losses.update(loss.item(), input.size(0))
             top1.update(acc1.item(), input.size(0))
             top5.update(acc5.item(), input.size(0))
@@ -257,7 +324,7 @@ def validate(args):
 
     if real_labels is not None:
         # real labels mode replaces topk values at the end
-        top1a, top5a = real_labels.get_accuracy(k=1), real_labels.get_accuracy(k=5)
+        top1a, top5a = real_labels.get_accuracy(k=1), real_labels.get_accuracy(k=5)  # k=2 ================================
     else:
         top1a, top5a = top1.avg, top5.avg
     results = OrderedDict(
@@ -268,8 +335,10 @@ def validate(args):
         cropt_pct=crop_pct,
         interpolation=data_config['interpolation'])
 
-    _logger.info(' * Acc@1 {:.3f} ({:.3f}) Acc@5 {:.3f} ({:.3f})'.format(
-       results['top1'], results['top1_err'], results['top5'], results['top5_err']))
+    # ================================
+    _logger.info(' * Acc@1 {:.3f} ({:.3f}) Acc@5 {:.3f} ({:.3f}) acc1_age {:.3f} acc1_gender {:.3f} acc1_glass {:.3f} acc1_hat {:.3f}'.format(
+       results['top1'], results['top1_err'], results['top5'], results['top5_err'], acc1_hat, acc1_gender, acc1_glass,acc1_AgeLess18))
+    # ================================
 
     return results
 
@@ -289,7 +358,7 @@ def main():
         if args.model == 'all':
             # validate all models in a list of names with pretrained checkpoints
             args.pretrained = True
-            model_names = list_models(pretrained=True, exclude_filters=['*_in21k', '*_in22k'])
+            model_names = list_models(pretrained=True, exclude_filters=['*in21k'])
             model_cfgs = [(n, '') for n in model_names]
         elif not is_model(args.model):
             # model name doesn't exist, try as wildcard filter

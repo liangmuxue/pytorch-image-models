@@ -6,6 +6,12 @@ Code: https://github.com/clovaai/AdamP
 
 Copyright (c) 2020-present NAVER Corp.
 MIT license
+
+Modified by YANG Ruixin for gradient centralization
+2021/03/18
+https://github.com/yang-ruixin
+yang_ruixin@126.com (in China)
+rxn.yang@gmail.com (out of China)
 """
 
 import torch
@@ -13,12 +19,22 @@ import torch.nn as nn
 from torch.optim.optimizer import Optimizer, required
 import math
 
+from .centralization import centralized_gradient  # ================================
+
+
 class AdamP(Optimizer):
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
-                 weight_decay=0, delta=0.1, wd_ratio=0.1, nesterov=False):
+                 weight_decay=0, delta=0.1, wd_ratio=0.1, nesterov=False,
+                 use_gc=False, gc_conv_only=False, gc_loc=False):  # ================================
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay,
                         delta=delta, wd_ratio=wd_ratio, nesterov=nesterov)
         super(AdamP, self).__init__(params, defaults)
+
+        # ================================
+        self.use_gc = use_gc
+        self.gc_conv_only = gc_conv_only
+        self.gc_loc = gc_loc
+        # ================================
 
     def _channel_view(self, x):
         return x.view(x.size(0), -1)
@@ -81,6 +97,12 @@ class AdamP(Optimizer):
                 bias_correction1 = 1 - beta1 ** state['step']
                 bias_correction2 = 1 - beta2 ** state['step']
 
+                # ================================
+                # GC operation
+                if self.gc_loc:
+                    grad = centralized_gradient(grad, use_gc=self.use_gc, gc_conv_only=self.gc_conv_only)
+                # ================================
+
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
                 exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
 
@@ -100,6 +122,13 @@ class AdamP(Optimizer):
                 # Weight decay
                 if group['weight_decay'] > 0:
                     p.data.mul_(1 - group['lr'] * group['weight_decay'] * wd_ratio)
+
+                # ================================
+                # GC operation
+                # perturb aka G_grad
+                if self.gc_loc is False:
+                    perturb = centralized_gradient(perturb, use_gc=self.use_gc, gc_conv_only=self.gc_conv_only)
+                # ================================
 
                 # Step
                 p.data.add_(-step_size, perturb)

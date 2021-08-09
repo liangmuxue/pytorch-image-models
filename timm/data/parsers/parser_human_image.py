@@ -20,20 +20,19 @@ def find_human_images_and_targets(folder, label_file, is_training=False,
         lines = f.readlines()
         for index, line in enumerate(lines):
             items = line.split(" ")
-            kp_file = items[0].split(".")[0] + ".npy"
-            kp_file = root + "/" + kp_file
-            front = int(items[5])
-            side = int(items[6])
-            back = int(items[7])
-            label = 0
-            if front == 1:
+            print('items {}'.format(items))
+            kp_file = items[0]
+            hege = int(items[1])
+            # buhege = int(items[2])
+            # back = int(items[7])
+            if hege == 1:
+                label = 0
+            if hege == 0:
                 label = 1
-            if side == 1:
-                label = 2
-            if back == 1:
-                label = 3
+            # if back == 1:
+            #     label = 3
             images_and_targets.append([kp_file, label])
-    class_to_idx = {"front":1,"side":2,"back":3,"unkown":0}
+    class_to_idx = {"hege":0,"buhege":1}
     if sort:
         images_and_targets = sorted(images_and_targets, key=lambda k: natural_key(k[0]))
     return images_and_targets, class_to_idx
@@ -49,9 +48,9 @@ class ParserHumanImage(Parser):
 
         self.root = root
         if is_training:
-            label_file = "datasets/train_val.txt"
+            label_file = "datasets/face_key_train.txt"
         else:
-            label_file = "datasets/test.txt"
+            label_file = "datasets/face_key_val.txt"
         self.samples, self.class_to_idx = find_human_images_and_targets(root, label_file,is_training=is_training)
         if len(self.samples) == 0:
             raise RuntimeError(

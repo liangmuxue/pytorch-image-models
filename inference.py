@@ -12,7 +12,7 @@ import logging
 import numpy as np
 import torch
 
-from timm.models import create_model, apply_test_time_pool
+from timm.models import create_model, apply_test_time_pool, MultiLabelModel, convert_splitbn_model
 from timm.data import ImageDataset, create_loader, resolve_data_config
 from timm.utils import AverageMeter, setup_default_logging
 
@@ -25,7 +25,7 @@ parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
 parser.add_argument('--output_dir', metavar='DIR', default='./',
                     help='path to output files')
-parser.add_argument('--model', '-m', metavar='MODEL', default='dpn92',
+parser.add_argument('--model', '-m', metavar='MODEL', default='efficientnet_b2',
                     help='model architecture (default: dpn92)')
 parser.add_argument('-j', '--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers (default: 2)')
@@ -41,7 +41,7 @@ parser.add_argument('--std', type=float, nargs='+', default=None, metavar='STD',
                     help='Override std deviation of of dataset')
 parser.add_argument('--interpolation', default='', type=str, metavar='NAME',
                     help='Image resize interpolation type (overrides model)')
-parser.add_argument('--num-classes', type=int, default=1000,
+parser.add_argument('--num-classes', type=int, default=2,
                     help='Number classes in dataset')
 parser.add_argument('--log-freq', default=10, type=int,
                     metavar='N', help='batch logging frequency (default: 10)')
@@ -68,8 +68,17 @@ def main():
         args.model,
         num_classes=args.num_classes,
         in_chans=3,
-        pretrained=args.pretrained,
-        checkpoint_path=args.checkpoint)
+        pretrained=True,
+        checkpoint_path='')
+    model = convert_splitbn_model(model, max(num_aug_splits, 2))
+    checkpoint = torch.load(args.checkpoint, map_location='cpu')
+    from collections import OrderedDict
+    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        new_state_dict = OrderedDict()
+        for k, v in checkpoint['state_dict'].items():
+            name = k[7:] if k.startswith('module') else k
+            new_state_dict[name] = v
+        model.load_state_dict(new_state_dict)
 
     _logger.info('Model %s created, param count: %d' %
                  (args.model, sum([m.numel() for m in model.parameters()])))
@@ -114,13 +123,13 @@ def main():
                 _logger.info('Predict: [{0}/{1}] Time {batch_time.val:.3f} ({batch_time.avg:.3f})'.format(
                     batch_idx, len(loader), batch_time=batch_time))
 
-    topk_ids = np.concatenate(topk_ids, axis=0)
+    topk_ids = np.concatenate(topk_ids, axis=0).squeeze()
 
     with open(os.path.join(args.output_dir, './topk_ids.csv'), 'w') as out_file:
         filenames = loader.dataset.filenames(basename=True)
         for filename, label in zip(filenames, topk_ids):
-            out_file.write('{0},{1}\n'.format(
-                filename, ','.join([ str(v) for v in label])))
+            out_file.write('{0},{1},{2},{3},{4},{5}\n'.format(
+                filename, label[0], label[1], label[2], label[3], label[4]))
 
 
 if __name__ == '__main__':

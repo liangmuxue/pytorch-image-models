@@ -55,6 +55,7 @@ class HumanImageDataset(data.Dataset):
         img_path, target = self.parser[index]
         try:
             img = np.load(img_path)
+            img = img.transpose((2,0,1))
             if img is None:
                 print("img None:{}".format(img_path))
             if self.transform is not None:

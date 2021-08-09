@@ -5,7 +5,7 @@ from .constants import *
 _logger = logging.getLogger(__name__)
 
 
-def resolve_data_config(args, default_cfg={}, model=None, use_test_size=False, verbose=False):
+def resolve_data_config(args, default_cfg={}, model=None, use_test_size=False, verbose=True):
     new_config = {}
     default_cfg = default_cfg
     if not default_cfg and model is not None and hasattr(model, 'default_cfg'):

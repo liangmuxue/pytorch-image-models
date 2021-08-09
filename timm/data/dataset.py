@@ -1,12 +1,24 @@
 """ Quick n Simple Image Folder, Tarfile based DataSet
 
 Hacked together by / Copyright 2020 Ross Wightman
+
+Modified by YANG Ruixin for multi-label classification
+2021/03/18
+https://github.com/yang-ruixin
+yang_ruixin@126.com (in China)
+rxn.yang@gmail.com (out of China)
 """
+
+# ================================
+import csv
+import numpy as np
+# ================================
+
 import torch.utils.data as data
 import os
 import torch
 import logging
-
+import cv2
 from PIL import Image
 
 from .parsers import create_parser
@@ -73,13 +85,12 @@ class IterableImageDataset(data.IterableDataset):
             batch_size=None,
             class_map='',
             load_bytes=False,
-            repeats=0,
             transform=None,
     ):
         assert parser is not None
         if isinstance(parser, str):
             self.parser = create_parser(
-                parser, root=root, split=split, is_training=is_training, batch_size=batch_size, repeats=repeats)
+                parser, root=root, split=split, is_training=is_training, batch_size=batch_size)
         else:
             self.parser = parser
         self.transform = transform
@@ -144,3 +155,85 @@ class AugMixDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.dataset)
+
+
+# ================================
+class DatasetAttributes:
+    """
+    Get all the possible labels
+    """
+    def __init__(self, annotation_path,label):
+        self.d = {}
+        for i in range(0,len(label)):
+            self.d['{}_lables'.format(label[i])] = []
+
+        with open(annotation_path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                for i in range(0, len(label)):
+                    self.d['{}_lables'.format(label[i])].append(row['{}'.format(label[i])])
+
+        for i in range(0, len(label)):
+            self.d['{}_lables'.format(label[i])] = np.unique(self.d['{}_lables'.format(label[i])])
+
+        for i in range(0, len(label)):
+            self.d['num_{}'.format(label[i])] = len(self.d['{}_lables'.format(label[i])])
+
+        for i in range(0, len(label)):
+            self.d['{}_id_to_name'.format(label[i])] = dict(zip(range(len(self.d['{}_lables'.format(label[i])])), self.d['{}_lables'.format(label[i])]))
+
+        for i in range(0, len(label)):
+            self.d['{}_name_to_id'.format(label[i])] = dict(zip(self.d['{}_lables'.format(label[i])], range(len(self.d['{}_lables'.format(label[i])]))))
+
+
+
+class DatasetML(data.Dataset):
+    def __init__(
+            self,
+            annotation_path,
+            attributes,label,
+            transform=None):
+
+        super().__init__()
+
+        self.transform = transform
+        self.attr = attributes
+        self.label = label
+        # initialize the arrays to store the ground truth labels and paths to the images
+        self.data = []
+        self.d = {}
+        for i in range(0, len(label)):
+            self.d['{}_lables'.format(label[i])] = []
+
+        # read the annotations from the CSV file
+        with open(annotation_path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                self.data.append(row['image_path'])
+                print(annotation_path,row)
+                for i in range(0, len(label)):
+                    self.d['{}_lables'.format(label[i])].append(self.attr.d['{}_name_to_id'.format(label[i])][row['{}'.format(label[i])]])
+
+    def __getitem__(self, idx):
+        # take the data sample by its index
+        img_path = self.data[idx]
+
+        # read image
+        #img = Image.open(img_path)
+        img = cv2.imread(img_path)
+        if img is None:
+            img = cv2.imread(self.data[idx-1])
+        img = Image.fromarray(img.astype('uint8')).convert('RGB')
+        # apply the image augmentations if needed
+        if self.transform:
+            img = self.transform(img)
+        labels = {}
+        for i in range(0, len(self.label)):
+            labels['{}_labels'.format(self.label[i])] = self.d['{}_lables'.format(self.label[i])][idx]
+
+        return img, labels
+
+    def __len__(self):
+        # return len(self.samples)
+        return len(self.data)
+# ================================
